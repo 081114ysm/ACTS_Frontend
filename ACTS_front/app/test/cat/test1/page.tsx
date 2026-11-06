@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useLayoutEffect, useRef } from "react";
 import Link from "next/link";
 import { clearCatFeatures, mean, sd, setCatFeatures } from "@/app/test/cat/lib/catFeatures";
 
@@ -16,6 +16,12 @@ export default function Test1() {
     const [currentStimulus, setCurrentStimulus] = useState<"blue-circle" | "sound" | null>(null);
     const [isWaiting, setIsWaiting] = useState(false);
     const [TestFinished, setTestFinished] = useState(false);
+    const [timingMetrics, setTimingMetrics] = useState<{
+        sampleCount: number;
+        averageMs: number;
+        minMs: number;
+        maxMs: number;
+    } | null>(null);
   const [results, setResults] = useState<{ type: string; reactionTime: number | null; correct: boolean }[]>([]);
 
     const stimulusStartTime = useRef<number>(0);
@@ -23,7 +29,13 @@ export default function Test1() {
     const stimulusTimeout = useRef<NodeJS.Timeout | null>(null);
     const hasResponded = useRef(false);
     const currentTrialType = useRef<"blue-circle" | "sound" | null>(null);
+    const isWaitingRef = useRef(false);
+    const progressRef = useRef(0);
     const savedFeaturesRef = useRef(false);
+    const stimulusScheduledAt = useRef<number | null>(null);
+    const timingSamples = useRef<number[]>([]);
+    const duplicateResponseIgnoredRef = useRef(0);
+    const clearedTimerCountRef = useRef(0);
 
     const playBeep = () => {
         const AudioContextClass = window.AudioContext || (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
@@ -49,9 +61,16 @@ export default function Test1() {
         savedFeaturesRef.current = false;
         setCurrentScreen("test");
         setProgress(0);
+        progressRef.current = 0;
         setCorrectCount(0);
         setResults([]);
         setIsWaiting(true);
+        isWaitingRef.current = true;
+        setTestFinished(false);
+        setTimingMetrics(null);
+        stimulusScheduledAt.current = null;
+        timingSamples.current = [];
+        sessionStorage.removeItem('cat_timing_metrics');
 
         setTimeout(() => {
             runTrial(0);
@@ -65,6 +84,7 @@ export default function Test1() {
         }
 
         hasResponded.current = false;
+        isWaitingRef.current = true;
         setIsWaiting(true);
 
         const waitTime = Math.random() * (INTER_TRIAL_MAX - INTER_TRIAL_MIN) + INTER_TRIAL_MIN;
@@ -73,7 +93,10 @@ export default function Test1() {
             const stimType = Math.random() < 0.5 ? "blue-circle" : "sound";
             currentTrialType.current = stimType;
 
+            // 자극 상태 변경 직전 시각을 기록해 화면 반영까지의 지연을 측정한다.
+            stimulusScheduledAt.current = performance.now();
             setCurrentStimulus(stimType);
+            isWaitingRef.current = false;
             setIsWaiting(false);
             stimulusStartTime.current = performance.now();
 
@@ -102,21 +125,42 @@ export default function Test1() {
                     
                     sessionStorage.setItem('cat_raw_data', JSON.stringify(rawData));
 
-                    setProgress(prev => prev + 1);
+                    setProgress(prev => {
+                        const nextProgress = prev + 1;
+                        progressRef.current = nextProgress;
+                        return nextProgress;
+                    });
                     runTrial(trialIndex + 1);
                 }
             }, STIMULUS_TIME);
         }, waitTime);
     };
 
+    useLayoutEffect(() => {
+        if (!currentStimulus || stimulusScheduledAt.current === null) return;
+
+        const renderDelay = performance.now() - stimulusScheduledAt.current;
+        timingSamples.current.push(renderDelay);
+        stimulusScheduledAt.current = null;
+    }, [currentStimulus]);
+
     const handleResponse = () => {
-        if (hasResponded.current) return;
-        if (isWaiting) return;
+        if (hasResponded.current) {
+            duplicateResponseIgnoredRef.current += 1;
+            return;
+        }
+        if (isWaitingRef.current) return;
 
         hasResponded.current = true;
 
-        if (trialTimeout.current) clearTimeout(trialTimeout.current);
-        if (stimulusTimeout.current) clearTimeout(stimulusTimeout.current);
+        if (trialTimeout.current) {
+            clearTimeout(trialTimeout.current);
+            clearedTimerCountRef.current += 1;
+        }
+        if (stimulusTimeout.current) {
+            clearTimeout(stimulusTimeout.current);
+            clearedTimerCountRef.current += 1;
+        }
 
         const reactionTime = performance.now() - stimulusStartTime.current;
         const stimType = currentTrialType.current;
@@ -131,7 +175,7 @@ export default function Test1() {
         if (!rawData.simple_trials) rawData.simple_trials = [];
         
         rawData.simple_trials.push({
-            trial_index: progress,
+            trial_index: progressRef.current,
             is_target: true,
             clicked: true,
             reaction_time_ms: Math.round(reactionTime)
@@ -140,7 +184,11 @@ export default function Test1() {
         sessionStorage.setItem('cat_raw_data', JSON.stringify(rawData));
 
         setCurrentStimulus(null);
-        setProgress(prev => prev + 1);
+        setProgress(prev => {
+            const nextProgress = prev + 1;
+            progressRef.current = nextProgress;
+            return nextProgress;
+        });
         setCorrectCount(prev => prev + 1);
 
         setTimeout(() => {
@@ -153,7 +201,7 @@ export default function Test1() {
       if (e.code !== 'Space') return;
       if (currentScreen !== 'test') return;
       if (hasResponded.current) return;
-      if (isWaiting) return;
+      if (isWaitingRef.current) return;
 
       e.preventDefault();
       handleResponse();
@@ -161,13 +209,41 @@ export default function Test1() {
 
     window.addEventListener('keydown', handleKeyPress);
     return () => window.removeEventListener('keydown', handleKeyPress);
-  }, [currentScreen, handleResponse, isWaiting]);
+  }, [currentScreen, handleResponse]);
 
-  useEffect(() => {
-    if (!TestFinished) return;
-    if (savedFeaturesRef.current) return;
+    useEffect(() => {
+        if (!TestFinished) return;
+        if (savedFeaturesRef.current) return;
 
-    const rtsSec = results
+        const samples = timingSamples.current;
+        if (samples.length > 0) {
+            const timingMetrics = {
+                sampleCount: samples.length,
+                averageMs: Number((samples.reduce((sum, value) => sum + value, 0) / samples.length).toFixed(2)),
+                minMs: Number(Math.min(...samples).toFixed(2)),
+                maxMs: Number(Math.max(...samples).toFixed(2)),
+                measuredAt: new Date().toISOString(),
+            };
+
+            setTimingMetrics(timingMetrics);
+            sessionStorage.setItem('cat_timing_metrics', JSON.stringify(timingMetrics));
+            console.table(timingMetrics);
+            console.info('[CAT timing] stimulus state-to-render delay:', timingMetrics);
+            const controlMetrics = {
+                trialCount: progressRef.current,
+                resultCount: results.length,
+                duplicateResponseIgnored: duplicateResponseIgnoredRef.current,
+                clearedTimerCount: clearedTimerCountRef.current,
+                stateValues: ['currentScreen', 'progress', 'correctCount', 'currentStimulus', 'isWaiting', 'results'],
+                refValues: ['hasResponded', 'currentTrialType', 'isWaitingRef', 'progressRef', 'trialTimeout', 'stimulusTimeout'],
+                measuredAt: new Date().toISOString(),
+            };
+            console.info('[CAT state/useRef] control metrics:', controlMetrics);
+            console.info('[CAT state/useRef] control metrics JSON:', JSON.stringify(controlMetrics));
+            console.info('[CAT timing] stimulus state-to-render delay JSON:', JSON.stringify(timingMetrics));
+        }
+
+        const rtsSec = results
       .filter((r) => r.correct && r.reactionTime != null)
       .map((r) => (r.reactionTime as number) / 1000);
 
@@ -258,14 +334,35 @@ export default function Test1() {
                 </div>
 
                 {TestFinished && (
-                    <Link
-                        href="/test/cat/test2"
-                        className="mt-10 w-[90px] h-[50px] flex justify-center items-center bg-[#4A8AEE] cursor-pointer border-2 hover:bg-white hover:border-[#4A8AEE] duration-200 group"
-                    >
-                        <p className="text-[14px] font-medium text-white group-hover:text-[#4A8AEE]">
-                            다음 →
-                        </p>
-                    </Link>
+                    <>
+                        {timingMetrics && (
+                            <div className="mt-5 text-center text-[13px] text-[#474747]">
+                                <p className="font-semibold">자극 표시 지연시간 측정 결과</p>
+                                <p className="mt-1">
+                                    평균 {timingMetrics.averageMs}ms · 최소 {timingMetrics.minMs}ms · 최대 {timingMetrics.maxMs}ms
+                                </p>
+                            </div>
+                        )}
+                        <div className="mt-6 flex gap-3">
+                            <button
+                                onClick={() => {
+                                    setTestFinished(false);
+                                    setCurrentScreen("intro");
+                                }}
+                                className="w-[110px] h-[50px] border-2 border-[#4A8AEE] text-[14px] font-medium text-[#4A8AEE] hover:bg-[#F0F6FF]"
+                            >
+                                다시 측정
+                            </button>
+                            <Link
+                                href="/test/cat/test2"
+                                className="w-[90px] h-[50px] flex justify-center items-center bg-[#4A8AEE] cursor-pointer border-2 hover:bg-white hover:border-[#4A8AEE] duration-200 group"
+                            >
+                                <p className="text-[14px] font-medium text-white group-hover:text-[#4A8AEE]">
+                                    다음 →
+                                </p>
+                            </Link>
+                        </div>
+                    </>
                 )}
             </div>
         </div>

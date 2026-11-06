@@ -1,5 +1,7 @@
 'use client';
 
+import { useEffect, useRef } from 'react';
+
 interface RadarChartProps {
   previousData?: {
     simple: number;
@@ -18,6 +20,7 @@ interface RadarChartProps {
 }
 
 export default function RadarChart({ previousData, currentData }: RadarChartProps) {
+  const metricsLoggedRef = useRef(false);
   const labels = ['단순\n주의력', '지속\n주의력', '간섭\n통제', '분할\n주의력', '작업\n기억력'];
   const currentValues = [
     currentData.simple,
@@ -68,6 +71,23 @@ export default function RadarChart({ previousData, currentData }: RadarChartProp
         })
         .join(' ') + ' Z'
     : null;
+
+  useEffect(() => {
+    if (metricsLoggedRef.current) return;
+    metricsLoggedRef.current = true;
+    const metrics = {
+      axisCount: labels.length,
+      gridLevelCount: levels,
+      currentResultPathCount: 1,
+      previousResultPathCount: previousPath ? 1 : 0,
+      labelCount: labels.length,
+      viewBox: '0 0 340 340',
+      implementation: 'inline SVG',
+      measuredAt: new Date().toISOString(),
+    };
+    console.info('[ACTS SVG radar] structure metrics:', metrics);
+    console.info('[ACTS SVG radar] structure metrics JSON:', JSON.stringify(metrics));
+  }, [labels.length, levels, previousPath]);
 
   return (
     <div className="w-full flex flex-col items-center py-4">
@@ -159,4 +179,3 @@ export default function RadarChart({ previousData, currentData }: RadarChartProp
     </div>
   );
 }
-
