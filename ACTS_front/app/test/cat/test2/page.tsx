@@ -149,7 +149,7 @@ export default function Test2() {
             <p className="mt-6 text-[18px] font-bold">📋 검사 방법</p>
             <ul className="mt-2 ml-7 text-[14px] font-medium text-[#474747] leading-7 list-disc">
               <li>다양한 모양이 순서대로 나타납니다</li>
-              <li><span className="text-[#4A8AEE] font-bold">'X' 모양을 제외한</span> 모든 그림에 클릭</li>
+              <li><span className="text-[#4A8AEE] font-bold">&apos;X&apos; 모양을 제외한</span> 모든 그림에 클릭</li>
               <li>X를 누르거나 클릭해야 할 그림을 놓치면 감점</li>
             </ul>
             <div className="w-[720px] h-[100px] bg-[#EBEDEF] mt-6 border-l-3 border-[#4A8AEE] p-4">
